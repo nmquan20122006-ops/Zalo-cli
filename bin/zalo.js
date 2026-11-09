@@ -1,18 +1,26 @@
 #!/usr/bin/env node
 import { ZaloClient } from "../src/client.js";
 import { startUI } from "../src/ui.js";
-import { renameThread } from "../src/store.js";
-import { syncRecent } from "../src/sync.js";
+import { loadDirectory, syncRecent } from "../src/sync.js";
+import { logout } from "../src/auth.js";
 
 const [cmd = "listen", ...args] = process.argv.slice(2);
+
+if (cmd === "logout") {
+  logout();
+  console.log("Đã đăng xuất.");
+  process.exit(0);
+}
+
 const isListen = cmd === "listen";
 const needsListener = isListen || cmd === "sync";
+const forceLogin = cmd === "login";
 
 const client = new ZaloClient();
 // Chỉ mở listener (WebSocket) khi thật sự cần nghe tin nhắn.
 // Nếu mở ở các lệnh one-shot, process sẽ không thoát sau khi in kết quả.
 try {
-  await client.connect({ listen: needsListener });
+  await client.connect({ listen: needsListener, force: forceLogin });
 } catch (e) {
   console.error("Đăng nhập thất bại:", e.message);
   process.exit(1);
@@ -20,6 +28,10 @@ try {
 
 try {
   switch (cmd) {
+    case "login":
+      // login() đã in tên + uid
+      break;
+
     case "whoami":
       console.log(client.me);
       break;
@@ -36,8 +48,13 @@ try {
       break;
 
     case "sync": {
-      const { groups, saved } = await syncRecent(client, { log: (line) => console.log(line) });
-      console.log(`Đồng bộ xong: ${groups.length} nhóm, ${saved} tin nhắn.`);
+      // Nạp danh bạ để biết tên hội thoại, rồi xin server phát lại tin cũ
+      const directory = await loadDirectory(client);
+      const { messages, saved } = await syncRecent(client, {
+        directory,
+        log: (line) => console.log(line),
+      });
+      console.log(`Đồng bộ xong: nhận ${messages} tin nhắn, lưu mới ${saved}.`);
       break;
     }
 
@@ -62,18 +79,9 @@ try {
 
     case "listen": {
       // Nạp sẵn bạn bè / nhóm để /open biết tên và biết đâu là nhóm
-      const directory = new Map();
+      let directory = new Map();
       try {
-        const [friends, groups] = await Promise.all([client.friends(), client.groups()]);
-        for (const f of friends) {
-          const name = f.zaloName || f.displayName;
-          renameThread(f.userId, name);
-          directory.set(f.userId, { name, isGroup: false });
-        }
-        for (const g of groups) {
-          renameThread(g.groupId, g.name);
-          directory.set(g.groupId, { name: g.name, isGroup: true });
-        }
+        directory = await loadDirectory(client);
       } catch (e) {
         console.error("Không tải được danh bạ:", e.message);
       }
@@ -86,7 +94,7 @@ try {
 
     default:
       console.error(`Lệnh không hợp lệ: ${cmd}`);
-      console.error("Các lệnh: whoami | friends | groups | send | sync | listen");
+      console.error("Các lệnh: login | logout | whoami | friends | groups | send | sync | listen");
       process.exitCode = 1;
   }
 } finally {

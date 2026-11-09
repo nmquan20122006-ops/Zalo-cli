@@ -35,6 +35,15 @@ export function startUI(client, initialThread, directory = new Map()) {
     }
   });
 
+  client.on("old-messages", (msgs) => {
+    // Tin nhắn lỡ khi offline, server phát lại lúc kết nối
+    let saved = 0;
+    for (const m of msgs) {
+      if (saveMessage({ ...m, threadName: directory.get(m.threadId)?.name })) saved++;
+    }
+    if (saved) print(c.dim(`Đã nạp ${saved} tin nhắn cũ.`));
+  });
+
   rl.on("line", async (line) => {
     const text = line.trim();
     if (!text) return rl.prompt();
@@ -53,14 +62,13 @@ export function startUI(client, initialThread, directory = new Map()) {
     }
 
     if (text === "/sync") {
-      print("Đang đồng bộ hội thoại đã chat... (có thể mất vài giây)");
+      print("Đang đồng bộ tin nhắn cũ... (chờ vài giây)");
       try {
-        const { groups, friends, saved } = await syncRecent(client, {
+        const { messages, saved } = await syncRecent(client, {
+          directory,
           log: (line) => print(c.dim("  " + line)),
         });
-        for (const g of groups) directory.set(g.groupId, { name: g.name, isGroup: true });
-        for (const f of friends) directory.set(f.userId, { name: f.zaloName || f.displayName, isGroup: false });
-        print(`Đồng bộ xong: ${groups.length} nhóm, ${saved} tin nhắn. Gõ /chats để xem.`);
+        print(`Đồng bộ xong: ${messages} tin nhắn, lưu mới ${saved}. Gõ /chats để xem.`);
       } catch (e) {
         print(`Lỗi đồng bộ: ${e.message}`);
       }

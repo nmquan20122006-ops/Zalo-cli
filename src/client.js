@@ -4,11 +4,15 @@ import { login } from "./auth.js";
 
 export class ZaloClient extends EventEmitter {
   #api; #me;
+  // Đệm tin nhắn cũ nhận được trước khi recentMessages() kịp gắn listener
+  // (ví dụ trong lúc loadDirectory() đang gọi HTTP lấy danh bạ).
+  #oldBuffer = [];
+  #connected = false;
 
   // listen = false dùng cho các lệnh one-shot (whoami, send, ...) để
   // không mở WebSocket làm process bị treo sau khi in kết quả.
-  async connect({ listen = true } = {}) {
-    this.#api = await login();
+  async connect({ listen = true, force = false } = {}) {
+    this.#api = await login({ force });
     this.#me = this.#api.getOwnId();
 
     if (listen) {
@@ -17,15 +21,21 @@ export class ZaloClient extends EventEmitter {
       });
       // Tin nhắn cũ (bị lỡ khi offline) do server phát lại khi kết nối
       this.#api.listener.on("old_messages", (msgs) => {
-        this.emit("old-messages", msgs.map((m) => this.#normalize(m)));
+        const normalized = msgs.map((m) => this.#normalize(m));
+        this.#oldBuffer.push(...normalized);
+        this.emit("old-messages", normalized);
       });
       this.#api.listener.on("connected", () => {
+        this.#connected = true;
         this.emit("connected");
         // Mỗi lần kết nối (kể cả reconnect), xin lại tin nhắn lỡ trong 2 tuần
         this.#api.listener.requestOldMessages(ThreadType.User);
         this.#api.listener.requestOldMessages(ThreadType.Group);
       });
-      this.#api.listener.on("closed", (code, reason) => this.emit("closed", code, reason));
+      this.#api.listener.on("closed", (code, reason) => {
+        this.#connected = false;
+        this.emit("closed", code, reason);
+      });
 
       this.#api.listener.start({ retryOnClose: true });
     }
@@ -76,43 +86,47 @@ export class ZaloClient extends EventEmitter {
 
   async friends() { return this.#api.getAllFriends(); }
 
-  // Lịch sử tin nhắn của một nhóm (HTTP API có sẵn của zca-js)
-  async groupHistory(groupId, count = 30) {
-    const res = await this.#api.getGroupChatHistory(groupId, count);
-    return (res.groupMsgs ?? []).map((m) => this.#normalize(m));
-  }
+  // Xin server phát lại tin nhắn cũ (bị lỡ khi offline) qua WebSocket.
+  // Chờ waitMs để gom hết các frame server gửi về.
+  // Lưu ý: KHÔNG dùng getGroupChatHistory() — endpoint /api/group/history
+  // đã bị Zalo xoá nên luôn trả 404 (xem issue #356 của zca-js).
+  async recentMessages({ waitMs = 4000 } = {}) {
+    // Nếu WebSocket chưa connected, request sẽ bị bỏ qua (sendWs không làm gì
+    // khi ws chưa mở). Chờ connected tối đa waitMs.
+    if (!this.#connected) {
+      await new Promise((resolve) => {
+        const onConn = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          this.off("connected", onConn);
+          resolve();
+        }, waitMs);
+        this.once("connected", onConn);
+      });
+    }
 
-  // Xin server gửi tin nhắn gần đây của chat riêng + nhóm qua WebSocket.
-  // Chỉ dùng được sau khi listener đã start().
-  async recentMessages({ waitMs = 5000 } = {}) {
-    const collected = [];
-    let remaining = 2; // chờ 2 phản hồi: 510 (user) và 511 (group)
-    let resolveDone;
-    let finished = false;
-    let timer;
-
-    const done = new Promise((resolve) => { resolveDone = resolve; });
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      resolveDone();
-    };
+    // Lấy những tin đã nhận sẵn trong buffer (auto-request lúc connected)
+    // để không bị mất khi loadDirectory() chạy lâu.
+    const collected = this.#oldBuffer.splice(0);
+    const seen = new Set(collected.map((m) => m.id));
 
     const onOld = (msgs) => {
-      for (const m of msgs) collected.push(this.#normalize(m));
-      if (--remaining <= 0) finish();
+      for (const m of msgs) {
+        const n = this.#normalize(m);
+        if (seen.has(n.id)) continue; // tránh trùng do request 2 lần
+        seen.add(n.id);
+        collected.push(n);
+      }
     };
 
     this.#api.listener.on("old_messages", onOld);
-    timer = setTimeout(finish, waitMs);
-
     try {
       this.#api.listener.requestOldMessages(ThreadType.User);
       this.#api.listener.requestOldMessages(ThreadType.Group);
-      await done;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     } finally {
-      clearTimeout(timer);
       this.#api.listener.off("old_messages", onOld);
     }
 
