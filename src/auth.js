@@ -91,8 +91,7 @@ export async function login({ force = false } = {}) { // neu goi ham login() -> 
       case LoginQRCallbackEventType.QRCodeGenerated: // neu da tao qr moi
         console.clear?.(); // xoa man hinh console
         console.log("Quét QR bằng app Zalo: Bên trên góc bên phải → nhấn vào biểu tượng quét QR.");
-        console.log("Terminal không quét được thì mở ảnh QR bên dưới.\n");
-        qrcode.generate(event.data.code, { small: true }); // ve truc tiep ra terminal duoi dang man hinh thu nho
+        //qrcode.generate(event.data.code, { small: true }); // ve truc tiep ra terminal duoi dang man hinh thu nho
 
         // zca-js KHÔNG tự lưu ảnh khi có callback → phải gọi saveToFile.
         event.actions
