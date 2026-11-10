@@ -15,7 +15,6 @@ export async function loadDirectory(client) {
     renameThread(g.groupId, g.name);
     directory.set(g.groupId, { name: g.name, isGroup: true });
   }
-
   return directory;
 }
 

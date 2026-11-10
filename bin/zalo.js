@@ -12,6 +12,39 @@ if (cmd === "logout") {
   process.exit(0);
 }
 
+// `tui` phải chạy bằng Bun (OpenTUI cần Bun >= 1.3.14 hoặc Node >= 26.4),
+// nên spawn một process riêng thay vì chạy tiếp bằng Node hiện tại.
+// Đặt trước client.connect() để không mở 2 kết nối Zalo cùng lúc.
+if (cmd === "tui") {
+  const { spawn } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const localBun = path.join(
+    here,
+    "..",
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "bun.cmd" : "bun",
+  );
+  // Ưu tiên bun cài trong project; nếu không có (vd. cài global) thì dùng
+  // bun trên PATH.
+  const bun = fs.existsSync(localBun) ? localBun : "bun";
+  const entry = path.join(here, "tui.js");
+
+  const child = spawn(bun, [entry, ...args], { stdio: "inherit" });
+  const code = await new Promise((resolve) => {
+    child.on("error", (e) => {
+      console.error("Không chạy được Bun:", e.message);
+      console.error("Cài lại bằng: npm install");
+      resolve(1);
+    });
+    child.on("exit", (c, signal) => resolve(c ?? (signal ? 1 : 0)));
+  });
+  process.exit(code);
+}
+
 const isListen = cmd === "listen";
 const needsListener = isListen || cmd === "sync";
 const forceLogin = cmd === "login";
@@ -94,7 +127,7 @@ try {
 
     default:
       console.error(`Lệnh không hợp lệ: ${cmd}`);
-      console.error("Các lệnh: login | logout | whoami | friends | groups | send | sync | listen");
+      console.error("Các lệnh: login | logout | whoami | friends | groups | send | sync | listen | tui");
       process.exitCode = 1;
   }
 } finally {

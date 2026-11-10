@@ -16,12 +16,14 @@ export class ZaloClient extends EventEmitter {
     this.#me = this.#api.getOwnId();
 
     if (listen) {
-      this.#api.listener.on("message", (msg) => {
-        this.emit("message", this.#normalize(msg));
+      this.#api.listener.on("message", (msg) => { // listener la 1 thuc the cua api zalo
+                                                  // nam tai "node_modules/zca-js/dist/apis.js"
+                                                  // message la 1 event nhan tin nhan
+                                                  // on("Ten su kien", callback)
+      this.emit("message", this.#normalize(msg)); // ban su kien "message" voi data = msg duoc chuan hoa
       });
-      // Tin nhắn cũ (bị lỡ khi offline) do server phát lại khi kết nối
-      this.#api.listener.on("old_messages", (msgs) => {
-        const normalized = msgs.map((m) => this.#normalize(m));
+      this.#api.listener.on("old_messages", (msgs) => { // lang nghe su kien ->  thuc hien callback ham
+        const normalized = msgs.map((m) => this.#normalize(m)); // thuc hien chuan hoa du lieu cho tung msg trong mang
         this.#oldBuffer.push(...normalized);
         this.emit("old-messages", normalized);
       });
@@ -35,6 +37,15 @@ export class ZaloClient extends EventEmitter {
       this.#api.listener.on("closed", (code, reason) => {
         this.#connected = false;
         this.emit("closed", code, reason);
+      });
+      // Bên kia đang gõ. Zalo chỉ gửi id người gõ + id hội thoại, không gửi
+      // tên, nên TUI tự tra tên trong directory khi hiển thị.
+      this.#api.listener.on("typing", (typing) => {
+        this.emit("typing", {
+          threadId: typing.threadId,
+          isGroup: typing.type === ThreadType.Group,
+          fromId: typing.data.uid,
+        });
       });
 
       this.#api.listener.start({ retryOnClose: true });
@@ -84,7 +95,55 @@ export class ZaloClient extends EventEmitter {
     );
   }
 
+  // Báo cho hội thoại biết mình đang gõ. Zalo tự hết trạng thái này sau vài
+  // giây, nên TUI gọi có giới hạn tần suất chứ không gọi mỗi phím.
+  async typing(threadId, isGroup = false) {
+    return this.#api.sendTypingEvent(
+      threadId,
+      isGroup ? ThreadType.Group : ThreadType.User,
+    );
+  }
+
+  // Xoá dấu chưa đọc trên server → badge trên điện thoại cũng mất.
+  async markRead(threadId, isGroup = false) {
+    return this.#api.removeUnreadMark(
+      threadId,
+      isGroup ? ThreadType.Group : ThreadType.User,
+    );
+  }
+
+  // Báo "đã xem" cho một tin vừa nhận để bên gửi thấy trạng thái đã xem.
+  // Chỉ làm được với tin còn `raw` từ WebSocket; tin đọc lại từ DB thì không.
+  async seen(m) {
+    if (!m?.raw?.data) return;
+    const d = m.raw.data;
+    return this.#api.sendSeenEvent(
+      {
+        msgId: d.msgId,
+        cliMsgId: d.cliMsgId,
+        uidFrom: d.uidFrom,
+        idTo: d.idTo,
+        msgType: d.msgType,
+        st: d.st,
+        at: d.at,
+        cmd: d.cmd,
+        ts: d.ts,
+      },
+      m.isGroup ? ThreadType.Group : ThreadType.User,
+    );
+  }
+
   async friends() { return this.#api.getAllFriends(); }
+
+  // Thông tin tài khoản đang đăng nhập (dùng cho footer của TUI).
+  // fetchAccountInfo() trả về profile giống lúc login đã in tên.
+  async profile() {
+    const { profile } = await this.#api.fetchAccountInfo();
+    return {
+      id: this.#me,
+      name: profile.displayName || profile.zaloName || profile.username || this.#me,
+    };
+  }
 
   // Xin server phát lại tin nhắn cũ (bị lỡ khi offline) qua WebSocket.
   // Chờ waitMs để gom hết các frame server gửi về.
